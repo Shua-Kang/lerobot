@@ -5,9 +5,11 @@ lerobot-train \
   --dataset.repo_id=HuggingFaceVLA/libero \
   --env.type=libero \
   --env.task=libero_10 \
-  --output_dir=./outputs/ \
-  --steps=100000 \
-  --batch_size=4 \
+  --output_dir=./temp22/ \
+  --steps=20000 \
+  --batch_size=32 \
   --eval.batch_size=1 \
   --eval.n_episodes=1 \
-  --eval_freq=1000 \
+  --eval_freq=200 \
+  --wandb.enable=true \
+  --job_name=act_so101_test
