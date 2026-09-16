@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from lerobot.scripts.lerobot_so101_gui import (
+    OverheatError,
     ARM_JOINTS,
     MOTOR_NAMES,
     READY_POSE,
@@ -167,3 +168,22 @@ def test_settle_relaxes_a_stalled_joint_before_giving_up(controller, monkeypatch
     controller._settle(controller.robot, goal, 0.0)
     final = controller.robot.actions[-1]
     assert [final[f"{name}.pos"] for name in ARM_JOINTS] == pytest.approx(list(goal))
+
+
+def test_one_corrupt_temperature_packet_does_not_stop_the_arm(controller, monkeypatch):
+    """Drive noise garbles the odd status byte; that must not look like an overheat."""
+    readings = iter([500, 108, 39])  # out of band, then a one-off spike, then truth
+
+    def fake_read(_data_name, _motor, **_kwargs):
+        return next(readings, 39)
+
+    controller.robot.bus = type("B", (), {"read": staticmethod(fake_read)})()
+    monkeypatch.setattr("lerobot.scripts.lerobot_so101_gui.MOTOR_NAMES", ("shoulder_pan",))
+    assert controller.check_temperatures() == {}
+
+
+def test_a_confirmed_overheat_does_stop_the_arm(controller, monkeypatch):
+    controller.robot.bus = type("B", (), {"read": staticmethod(lambda *a, **k: 71)})()
+    monkeypatch.setattr("lerobot.scripts.lerobot_so101_gui.MOTOR_NAMES", ("shoulder_pan",))
+    with pytest.raises(OverheatError, match="71"):
+        controller.check_temperatures()

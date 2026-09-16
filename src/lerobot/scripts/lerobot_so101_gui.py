@@ -81,6 +81,10 @@ CARTESIAN_AXES = ("x", "y", "z", "pitch", "roll")
 # well before that, and refuse to keep driving a joint that is nearly there.
 TEMPERATURE_WARN_C = 50
 TEMPERATURE_STOP_C = 62
+# Motor drive noise corrupts the occasional status packet, and a corrupted
+# temperature byte reads as a wild value. Anything outside this band is a bad
+# packet, not a hot motor -- treating it as real would stop the arm for nothing.
+TEMPERATURE_PLAUSIBLE_C = (5, 100)
 
 
 class OverheatError(RuntimeError):
@@ -468,18 +472,28 @@ class ArmController:
 
     def temperatures(self) -> dict[str, int]:
         robot = self._require_robot()
-        try:
-            return {
-                name: int(robot.bus.read("Present_Temperature", name, normalize=False))
-                for name in MOTOR_NAMES
-            }
-        except Exception:
-            return {}
+        low, high = TEMPERATURE_PLAUSIBLE_C
+        out: dict[str, int] = {}
+        for name in MOTOR_NAMES:
+            try:
+                value = int(robot.bus.read("Present_Temperature", name, normalize=False))
+            except Exception:
+                continue
+            if low <= value <= high:
+                out[name] = value
+        return out
 
     def check_temperatures(self) -> dict[str, int]:
         """Raise before a servo cooks itself; return the joints that are warm."""
         temps = self.temperatures()
         hot = {name: value for name, value in temps.items() if value >= TEMPERATURE_STOP_C}
+        if hot:
+            # Confirm on a second read. A single corrupted packet must never be
+            # enough to stop the arm, but a real overheat is still there a
+            # moment later.
+            time.sleep(0.05)
+            again = self.temperatures()
+            hot = {name: again[name] for name in hot if again.get(name, 0) >= TEMPERATURE_STOP_C}
         if hot:
             raise OverheatError(
                 "电机过热，已停止运动，请断电冷却几分钟："
