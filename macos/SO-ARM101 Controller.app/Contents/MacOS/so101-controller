@@ -1,0 +1,22 @@
+#!/bin/zsh
+
+PYTHON_BIN="/Users/hui/miniforge3/envs/lerobot/bin/python"
+PROJECT_DIR="/Users/hui/workspace/lerobot_my"
+LOG_DIR="${HOME}/Library/Logs"
+LOG_FILE="${LOG_DIR}/SO-ARM101 Controller.log"
+
+mkdir -p "${LOG_DIR}"
+
+if [[ ! -x "${PYTHON_BIN}" ]]; then
+    /usr/bin/osascript -e 'display alert "SO-ARM101 Controller 无法启动" message "没有找到 lerobot Python 环境。请重新按照仓库 README 安装。" as critical'
+    exit 1
+fi
+
+if [[ ! -d "${PROJECT_DIR}/src/lerobot" ]]; then
+    /usr/bin/osascript -e 'display alert "SO-ARM101 Controller 无法启动" message "没有找到 /Users/hui/workspace/lerobot_my。" as critical'
+    exit 1
+fi
+
+cd "${PROJECT_DIR}" || exit 1
+export PYTHONPATH="${PROJECT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
+exec "${PYTHON_BIN}" -m lerobot.scripts.lerobot_so101_gui >>"${LOG_FILE}" 2>&1

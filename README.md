@@ -1,159 +1,141 @@
-<p align="center">
-  <img alt="LeRobot, Hugging Face Robotics Library" src="./media/readme/lerobot-logo-thumbnail.png" width="100%">
-</p>
+# SO-ARM101 单从臂 GUI（macOS）
 
-<div align="center">
+这个仓库用于在 Mac 上直接控制一台通过 USB 连接的 **SO-ARM101 Follower（从机械臂）**，不需要 Leader 遥控臂。
 
-[![Tests](https://github.com/huggingface/lerobot/actions/workflows/nightly.yml/badge.svg?branch=main)](https://github.com/huggingface/lerobot/actions/workflows/nightly.yml?query=branch%3Amain)
-[![Python versions](https://img.shields.io/pypi/pyversions/lerobot)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://github.com/huggingface/lerobot/blob/main/LICENSE)
-[![Status](https://img.shields.io/pypi/status/lerobot)](https://pypi.org/project/lerobot/)
-[![Version](https://img.shields.io/pypi/v/lerobot)](https://pypi.org/project/lerobot/)
-[![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-v2.1-ff69b4.svg)](https://github.com/huggingface/lerobot/blob/main/CODE_OF_CONDUCT.md)
-[![Discord](https://img.shields.io/badge/Discord-Join_Us-5865F2?style=flat&logo=discord&logoColor=white)](https://discord.gg/q8Dzzpym3f)
+GUI 提供：
 
-</div>
+- 自动检测 USB 插入、拔出和串口号（优先使用 macOS 的 `/dev/cu.usbmodem*`）
+- 检查校准文件，并在界面内完成中心点设置和活动范围校准
+- 遇到负数 / Homing Offset 错误时，重置电机中心点
+- **单轴解耦的笛卡尔控制**：点 Z+ 就只有 Z 变，X / Y / Pitch / Roll 原地不动
+- 平移步长可选 1 / 5 / 10 / 20 mm，旋转步长可选 1 / 5 / 10°
+- 实时显示末端的 X/Y/Z、Pitch、Roll，以及「指令位置」和「跟随误差」
+- 关节级微调按钮，笛卡尔解不出来时用来脱困
+- 打开和关闭夹爪，或一键全开 / 全关
+- 一键回到 Ready Pose（适合微调的直立姿态）或 LeRobot 标准 Reset Pose
 
-**LeRobot** aims to provide models, datasets, and tools for real-world robotics in PyTorch. The goal is to lower the barrier to entry so that everyone can contribute to and benefit from shared datasets and pretrained models.
+## 0. 为什么只有 5 个笛卡尔自由度
 
-🤗 A hardware-agnostic, Python-native interface that standardizes control across diverse platforms, from low-cost arms (SO-100) to humanoids.
+SO-ARM101 只有 5 个手臂关节，所以它**做不到独立的 6 自由度位姿控制**：
 
-🤗 A standardized, scalable LeRobotDataset format (Parquet + MP4 or images) hosted on the Hugging Face Hub, enabling efficient storage, streaming and visualization of massive robotic datasets.
+- `shoulder_pan` 绕竖直轴转整条手臂；
+- `shoulder_lift`、`elbow_flex`、`wrist_flex` 三个轴互相平行，在 pan 选定的那个竖直平面里组成一条平面 3R 链；
+- `wrist_roll` 让夹爪绕自己的进给轴自转。
 
-🤗 State-of-the-art policies that have been shown to transfer to the real-world ready for training and deployment.
+可控的任务空间正好是 `(x, y, z, pitch, roll)` 五个量——**yaw 不是自由变量**，它由 pan 角唯一决定。
 
-🤗 Comprehensive support for the open-source ecosystem to democratize physical AI.
+以前的版本把这 5 个关节喂给通用的 6 自由度数值 IK。请求里那一部分做不到的姿态，最小二乘解会把误差摊到所有轴上，于是「点 Z+，结果 X、Y 和姿态全跟着动」。
 
-## Quick Start
+现在 `src/lerobot/scripts/so101_kinematics.py` 针对这个真实结构写了**闭式解析解**：pan 角先由目标点确定，剩下的平面 3R 链用余弦定理一次解完，`wrist_roll` 直接等于 roll。每个轴因此在数学上严格解耦（往返误差 < 1e-9），解不出来就明确报错，而不是「挪到最接近的地方」。
 
-LeRobot can be installed directly from PyPI.
+## 1. 硬件安全
 
-```bash
-pip install lerobot
-lerobot-info
-```
+1. USB 只负责通信，**不能给舵机供电**。
+2. SO101 标准版 Follower 使用 5V；Pro 版 Follower 使用 12V。以你的电机和套件标识为准，接错电压可能烧坏电机。
+3. 首次连接、校准、重置中心点时扶住机械臂，并留出完整活动空间。
+4. GUI 不会自动执行校准、中心点重置或移动；这些操作都需要点击按钮。
 
-> [!IMPORTANT]
-> For detailed installation guide, please see the [Installation Documentation](https://huggingface.co/docs/lerobot/installation).
+## 2. 安装
 
-## Robots & Control
-
-<div align="center">
-  <img src="./media/readme/robots_control_video.webp" width="640px" alt="Reachy 2 Demo">
-</div>
-
-LeRobot provides a unified `Robot` class interface that decouples control logic from hardware specifics. It supports a wide range of robots and teleoperation devices.
-
-```python
-from lerobot.robots.myrobot import MyRobot
-
-# Connect to a robot
-robot = MyRobot(config=...)
-robot.connect()
-
-# Read observation and send action
-obs = robot.get_observation()
-action = model.select_action(obs)
-robot.send_action(action)
-```
-
-**Supported Hardware:** SO100, LeKiwi, Koch, HopeJR, OMX, EarthRover, Reachy2, Gamepads, Keyboards, Phones, OpenARM, Unitree G1.
-
-While these devices are natively integrated into the LeRobot codebase, the library is designed to be extensible. You can easily implement the Robot interface to utilize LeRobot's data collection, training, and visualization tools for your own custom robot.
-
-For detailed hardware setup guides, see the [Hardware Documentation](https://huggingface.co/docs/lerobot/integrate_hardware).
-
-## LeRobot Dataset
-
-To solve the data fragmentation problem in robotics, we utilize the **LeRobotDataset** format.
-
-- **Structure:** Synchronized MP4 videos (or images) for vision and Parquet files for state/action data.
-- **HF Hub Integration:** Explore thousands of robotics datasets on the [Hugging Face Hub](https://huggingface.co/lerobot).
-- **Tools:** Seamlessly delete episodes, split by indices/fractions, add/remove features, and merge multiple datasets.
-
-```python
-from lerobot.datasets.lerobot_dataset import LeRobotDataset
-
-# Load a dataset from the Hub
-dataset = LeRobotDataset("lerobot/aloha_mobile_cabinet")
-
-# Access data (automatically handles video decoding)
-episode_index=0
-print(f"{dataset[episode_index]['action'].shape=}\n")
-```
-
-Learn more about it in the [LeRobotDataset Documentation](https://huggingface.co/docs/lerobot/lerobot-dataset-v3)
-
-## SoTA Models
-
-LeRobot implements state-of-the-art policies in pure PyTorch, covering Imitation Learning, Reinforcement Learning, and Vision-Language-Action (VLA) models, with more coming soon. It also provides you with the tools to instrument and inspect your training process.
-
-<p align="center">
-  <img alt="Gr00t Architecture" src="./media/readme/VLA_architecture.jpg" width="640px">
-</p>
-
-Training a policy is as simple as running a script configuration:
+建议使用 Python 3.10～3.12 的虚拟环境：
 
 ```bash
-lerobot-train \
-  --policy=act \
-  --dataset.repo_id=lerobot/aloha_mobile_cabinet
+cd /path/to/lerobot
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -e ".[so101-gui]"
 ```
 
-| Category                   | Models                                                                                                                                                                                                       |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Imitation Learning**     | [ACT](./docs/source/policy_act_README.md), [Diffusion](./docs/source/policy_diffusion_README.md), [VQ-BeT](./docs/source/policy_vqbet_README.md)                                                             |
-| **Reinforcement Learning** | [HIL-SERL](./docs/source/hilserl.mdx), [TDMPC](./docs/source/policy_tdmpc_README.md) & QC-FQL (coming soon)                                                                                                  |
-| **VLAs Models**            | [Pi0Fast](./docs/source/pi0fast.mdx), [Pi0.5](./docs/source/pi05.mdx), [GR00T N1.5](./docs/source/policy_groot_README.md), [SmolVLA](./docs/source/policy_smolvla_README.md), [XVLA](./docs/source/xvla.mdx) |
+首次使用末端控制时，程序会从 TheRobotStudio 的 SO-ARM100 官方 GitHub 仓库下载 SO101 URDF 和网格到 LeRobot 缓存。之后可离线运行。
 
-Similarly to the hardware, you can easily implement your own policy & leverage LeRobot's data collection, training, and visualization tools, and share your model to the HF Hub
+## 3. 启动
 
-For detailed policy setup guides, see the [Policy Documentation](https://huggingface.co/docs/lerobot/bring_your_own_policies).
-
-## Inference & Evaluation
-
-Evaluate your policies in simulation or on real hardware using the unified evaluation script. LeRobot supports standard benchmarks like **LIBERO**, **MetaWorld** and more to come.
+先连接机械臂外部电源和 USB，然后运行：
 
 ```bash
-# Evaluate a policy on the LIBERO benchmark
-lerobot-eval \
-  --policy.path=lerobot/pi0_libero_finetuned \
-  --env.type=libero \
-  --env.task=libero_object \
-  --eval.n_episodes=10
+source .venv/bin/activate
+lerobot-so101-gui
 ```
 
-Learn how to implement your own simulation environment or benchmark and distribute it from the HF Hub by following the [EnvHub Documentation](https://huggingface.co/docs/lerobot/envhub)
+也可以直接在 Finder 中双击项目里的 App：
 
-## Resources
-
-- **[Documentation](https://huggingface.co/docs/lerobot/index):** The complete guide to tutorials & API.
-- **[Chinese Tutorials: LeRobot+SO-ARM101中文教程-同济子豪兄](https://zihao-ai.feishu.cn/wiki/space/7589642043471924447)** Detailed doc for assembling, teleoperate, dataset, train, deploy. Verified by Seed Studio and 5 global hackathon players.
-- **[Discord](https://discord.gg/q8Dzzpym3f):** Join the `LeRobot` server to discuss with the community.
-- **[X](https://x.com/LeRobotHF):** Follow us on X to stay up-to-date with the latest developments.
-- **[Robot Learning Tutorial](https://huggingface.co/spaces/lerobot/robot-learning-tutorial):** A free, hands-on course to learn robot learning using LeRobot.
-
-## Citation
-
-If you use LeRobot in your research, please cite:
-
-```bibtex
-@misc{cadene2024lerobot,
-    author = {Cadene, Remi and Alibert, Simon and Soare, Alexander and Gallouedec, Quentin and Zouitine, Adil and Palma, Steven and Kooijmans, Pepijn and Aractingi, Michel and Shukor, Mustafa and Aubakirova, Dana and Russi, Martino and Capuano, Francesco and Pascal, Caroline and Choghari, Jade and Moss, Jess and Wolf, Thomas},
-    title = {LeRobot: State-of-the-art Machine Learning for Real-World Robotics in Pytorch},
-    howpublished = "\url{https://github.com/huggingface/lerobot}",
-    year = {2024}
-}
+```text
+macos/SO-ARM101 Controller.app
 ```
 
-## Contribute
+App 的运行日志位于 `~/Library/Logs/SO-ARM101 Controller.log`。
 
-We welcome contributions from everyone in the community! To get started, please read our [CONTRIBUTING.md](./CONTRIBUTING.md) guide. Whether you're adding a new feature, improving documentation, or fixing a bug, your help and feedback are invaluable. We're incredibly excited about the future of open-source robotics and can't wait to work with you on what's next—thank you for your support!
+GUI 每 0.7 秒扫描一次 USB。只有一个匹配设备时会自动选中；有多个设备时可在下拉框选择。插拔 USB 后无需重启。
 
-<p align="center">
-  <img alt="SO101 Video" src="./media/readme/so100_video.webp" width="640px">
-</p>
+## 4. 首次校准
 
-<div align="center">
-<sub>Built by the <a href="https://huggingface.co/lerobot">LeRobot</a> team at <a href="https://huggingface.co">Hugging Face</a> with ❤️</sub>
-</div>
+没有校准文件时：
+
+1. 点击“开始校准”，机械臂扭矩会关闭。
+2. 扶住机械臂，把各关节摆在各自活动范围的中间位置。
+3. 点击“中心姿态已摆好”。
+4. 依次缓慢移动 `shoulder_pan`、`shoulder_lift`、`elbow_flex`、`wrist_flex` 和夹爪，扫过完整但安全的活动范围。`wrist_roll` 不需要扫范围。
+5. 点击“完成范围采集”。
+
+校准文件固定保存为：
+
+```text
+~/.cache/huggingface/lerobot/calibration/robots/so_follower/so101_gui_follower.json
+```
+
+## 5. 负数错误 / 重置电机中心点
+
+如果校准时报 Homing Offset、负数编码或电机中心异常：
+
+1. 扶住机械臂，并把所有关节摆在活动范围中间。
+2. 点击“重置电机中心点”，阅读确认框后确认。
+3. 程序会关闭扭矩、重置旧限制、把当前姿态写成半圈中心，并删除已经失效的旧校准文件。
+4. 立即按“首次校准”步骤重新校准。
+
+不要在关节靠近机械极限时重置中心点。
+
+## 6. 控制机械臂
+
+校准完成后点击“连接”。建议先点“回到 Ready Pose”，它是一个远离所有关节限位和奇异位形的直立姿态。
+
+- X / Y / Z 每次移动所选的平移步长（默认 5 mm）
+- Pitch / Roll 每次转动所选的旋转步长（默认 5°）
+- 夹爪 ±5%，或一键全开 / 全关
+- “回到 Reset Pose”用约 3 秒返回官方 SO101 姿态：`[-4, -103, 97, 78, -65, 0]`（前五项是角度，最后一项是夹爪百分比）
+
+请求超出可达范围或关节限位时，程序会**直接拒绝并且不动机械臂**，弹窗里写明缺多少。这时用第 4 栏的关节微调按钮把手臂挪回可解的区域。
+
+### 实测精度
+
+在真机上验证（步长 5 mm，从 Ready Pose 出发）：
+
+| 指标 | 结果 |
+| --- | --- |
+| 连点 10 次 Z+5 mm | 实际上升 49.1 mm / 指令 50 mm |
+| 同一过程中的 X 串扰 | 0.3 mm |
+| 20 次往返后的净漂移 | 0.0 mm |
+| 单次 10 mm / 20° 指令的其他轴串扰 | ≤ 2.3 mm，接近舵机自身重复精度 |
+
+剩下的毫米级误差来自舵机：LeRobot 把这些 Feetech 舵机设为 P=16、I=0，重力会让关节停在目标之前。控制器用一个**软件积分环**补掉这个静差——只在手臂静止时累加偏置（否则会去追速度而不是静差，10 mm 会变成 13 mm），并且限幅 8°、卡住时自动放弃。界面上的「跟随误差」一行就是实测值减指令值。
+
+页面支持右侧滚动条、鼠标滚轮和触控板滚动。
+
+## 故障排查
+
+- 没有端口：检查 USB 数据线、外部电源；Mac 一般显示为 `/dev/cu.usbmodem...`。
+- 能看到端口但连接失败：关闭占用串口的终端程序，拔插 USB 后重试。
+- 找不到 `placo`：重新运行 `pip install -e ".[so101-gui]"`。
+- 首次点运动按钮时下载失败：联网后再点一次；URDF 下载成功后会保存在本机缓存。
+- 电机 LED 熄灭或闪烁：先断开控制，检查菊花链线缆、电源电压、关节是否顶到极限。
+- 显示的 XYZ 和实物对不上：说明校准中心点和 URDF 零位不一致。`MotorNormMode.DEGREES` 把标定行程的**中点**当作 0°，所以重新校准时中心姿态要摆准。
+
+## 测试
+
+```bash
+pytest tests/scripts/          # 42 个用例，不需要接机械臂
+```
+
+`tests/scripts/test_so101_kinematics.py` 会把解析解和官方 URDF 的数值 FK 逐点对照，并验证「一个请求只动一个坐标」。
+
+参考：[Seeed Studio SO-ARM100/101 LeRobot 教程](https://wiki.seeedstudio.com/cn/lerobot_so100m/)

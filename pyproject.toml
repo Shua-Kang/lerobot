@@ -102,6 +102,7 @@ can-dep = ["python-can>=4.2.0,<5.0.0"]
 
 # Motors
 feetech = ["feetech-servo-sdk>=1.0.0,<2.0.0"]
+so101-gui = ["lerobot[feetech]", "lerobot[placo-dep]"]
 dynamixel = ["dynamixel-sdk>=3.7.31,<3.9.0"]
 damiao = ["lerobot[can-dep]"]
 robstride = ["lerobot[can-dep]"]
@@ -212,6 +213,7 @@ lerobot-find-joint-limits="lerobot.scripts.lerobot_find_joint_limits:main"
 lerobot-imgtransform-viz="lerobot.scripts.lerobot_imgtransform_viz:main"
 lerobot-edit-dataset="lerobot.scripts.lerobot_edit_dataset:main"
 lerobot-setup-can="lerobot.scripts.lerobot_setup_can:main"
+lerobot-so101-gui="lerobot.scripts.lerobot_so101_gui:main"
 
 # ---------------- Tool Configurations ----------------
 [tool.setuptools.packages.find]
