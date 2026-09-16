@@ -76,6 +76,16 @@ STILL_TOLERANCE_DEG = 0.15
 
 CARTESIAN_AXES = ("x", "y", "z", "pitch", "roll")
 
+# Feetech STS3215 servos trip their overheat protection around 70 C and drop off
+# the bus mid-packet, which surfaces as a confusing serial read failure. Warn
+# well before that, and refuse to keep driving a joint that is nearly there.
+TEMPERATURE_WARN_C = 50
+TEMPERATURE_STOP_C = 62
+
+
+class OverheatError(RuntimeError):
+    """A servo is too hot to keep driving."""
+
 
 @dataclass(frozen=True)
 class SerialPort:
@@ -382,9 +392,13 @@ class ArmController:
                 return
             if worst > best - 0.02:
                 # Not converging: against a hard stop, or the load is beyond the
-                # servo. Give up after a few tries instead of pushing harder.
+                # servo. Give up after a few tries instead of pushing harder,
+                # and drop the bias first -- leaving a joint commanded past a
+                # stop it cannot pass is a stall, and a stalled Feetech servo
+                # heats until its overheat protection drops it off the bus.
                 stagnant += 1
                 if stagnant >= 3:
+                    self._send_arm(robot, goal, gripper)
                     return
             else:
                 stagnant = 0
@@ -452,6 +466,27 @@ class ArmController:
     def _resync_target(self) -> None:
         self._target = self.kinematics().forward(self.measured_joints())
 
+    def temperatures(self) -> dict[str, int]:
+        robot = self._require_robot()
+        try:
+            return {
+                name: int(robot.bus.read("Present_Temperature", name, normalize=False))
+                for name in MOTOR_NAMES
+            }
+        except Exception:
+            return {}
+
+    def check_temperatures(self) -> dict[str, int]:
+        """Raise before a servo cooks itself; return the joints that are warm."""
+        temps = self.temperatures()
+        hot = {name: value for name, value in temps.items() if value >= TEMPERATURE_STOP_C}
+        if hot:
+            raise OverheatError(
+                "电机过热，已停止运动，请断电冷却几分钟："
+                + "，".join(f"{name} {value}°C" for name, value in hot.items())
+            )
+        return {name: value for name, value in temps.items() if value >= TEMPERATURE_WARN_C}
+
     def get_state(self) -> dict:
         joints = self._still_joints()
         actual = self.kinematics().forward(joints)
@@ -459,6 +494,7 @@ class ArmController:
             "joints": {name: float(joints[index]) for index, name in enumerate(MOTOR_NAMES)},
             "ee": actual.as_dict(),
             "target": self._target.as_dict() if self._target is not None else None,
+            "warm": self.check_temperatures(),
         }
 
     def _require_robot(self) -> SO101Follower:
@@ -811,6 +847,9 @@ class SO101App:
         lines.append(
             "关节角度  " + "  ".join(f"{name}={value:.1f}°" for name, value in state["joints"].items())
         )
+        warm = state.get("warm")
+        if warm:
+            lines.append("⚠ 电机偏热  " + "  ".join(f"{n} {v}°C" for n, v in warm.items()))
         self.pose_var.set("\n".join(lines))
 
     def _set_controls(self, enabled: bool) -> None:
@@ -859,7 +898,12 @@ class SO101App:
         from tkinter import messagebox
 
         self._log(f"错误：{error}")
-        title = "该动作超出机械臂能力" if isinstance(error, UnreachableError) else "操作失败"
+        if isinstance(error, OverheatError):
+            title = "电机过热"
+        elif isinstance(error, UnreachableError):
+            title = "该动作超出机械臂能力"
+        else:
+            title = "操作失败"
         messagebox.showerror(title, str(error))
 
     def _log(self, message: str) -> None:

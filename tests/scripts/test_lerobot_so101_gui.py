@@ -152,3 +152,18 @@ def test_settle_gives_up_on_a_joint_that_cannot_move(controller, monkeypatch):
         for action in controller.robot.actions
     ]
     assert biases and max(biases) <= 8.0
+
+
+def test_settle_relaxes_a_stalled_joint_before_giving_up(controller, monkeypatch):
+    """A joint that cannot reach its goal must not be left commanded past it.
+
+    Holding an unreachable command is a stall, and a stalled Feetech servo heats
+    until its overheat protection drops it off the bus.
+    """
+    stuck = np.array([float(READY_POSE[name]) for name in MOTOR_NAMES])
+    monkeypatch.setattr(ArmController, "measured_joints", lambda self: stuck.copy())
+    goal = stuck[:5] + 30.0
+    controller.robot.actions.clear()
+    controller._settle(controller.robot, goal, 0.0)
+    final = controller.robot.actions[-1]
+    assert [final[f"{name}.pos"] for name in ARM_JOINTS] == pytest.approx(list(goal))
