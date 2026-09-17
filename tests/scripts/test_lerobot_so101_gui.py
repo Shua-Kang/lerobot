@@ -4,12 +4,12 @@ import numpy as np
 import pytest
 
 from lerobot.scripts.lerobot_so101_gui import (
-    OverheatError,
     ARM_JOINTS,
     MOTOR_NAMES,
     READY_POSE,
     RESET_POSE,
     ArmController,
+    OverheatError,
     SerialPort,
     discover_so101_ports,
 )
@@ -128,6 +128,53 @@ def test_commands_need_a_connected_robot():
     arm = ArmController()
     with pytest.raises(RuntimeError, match="请先连接机械臂"):
         arm.nudge("z", 0.01)
+
+
+def test_motor_id_for_matches_the_robot_fixed_motor_table():
+    # No hardware needed: _make_robot("", ...) only constructs Python objects.
+    arm = ArmController()
+    ids = {name: arm.motor_id_for(name) for name in MOTOR_NAMES}
+    assert ids == {
+        "shoulder_pan": 1,
+        "shoulder_lift": 2,
+        "elbow_flex": 3,
+        "wrist_flex": 4,
+        "wrist_roll": 5,
+        "gripper": 6,
+    }
+
+
+def test_set_motor_id_writes_through_setup_motor_and_returns_the_id(monkeypatch):
+    """set_motor_id assumes exactly one motor on the bus, found by setup_motor's
+    own broadcast-ping scan, and must not touch the other five configured
+    joints -- disconnecting with disable_torque=True would try to and fail."""
+    calls = []
+
+    class FakeBus:
+        motors = {"wrist_roll": type("M", (), {"id": 5})()}
+        is_connected = True
+
+        def setup_motor(self, motor):
+            calls.append(("setup_motor", motor))
+
+        def disconnect(self, disable_torque):
+            calls.append(("disconnect", disable_torque))
+
+    class FakeRobotForSetup:
+        bus = FakeBus()
+
+    arm = ArmController()
+    monkeypatch.setattr(arm, "disconnect", lambda: calls.append(("controller.disconnect",)))
+    monkeypatch.setattr(ArmController, "_make_robot", staticmethod(lambda *a, **k: FakeRobotForSetup()))
+
+    result = arm.set_motor_id("/dev/cu.fake", "wrist_roll")
+
+    assert result == 5
+    assert calls == [
+        ("controller.disconnect",),
+        ("setup_motor", "wrist_roll"),
+        ("disconnect", False),
+    ]
 
 
 def test_port_discovery_prefers_callout_devices(monkeypatch):

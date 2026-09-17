@@ -296,6 +296,31 @@ class ArmController:
         if path.exists():
             path.unlink()
 
+    def motor_id_for(self, motor: str) -> int:
+        """The bus ID this joint name is wired to, from the robot's fixed motor table."""
+        return self._make_robot("", self.robot_id).bus.motors[motor].id
+
+    def set_motor_id(self, port: str, motor: str) -> int:
+        """Give the lone motor on the bus this joint's factory ID and baud-rate.
+
+        For swapping in a replacement motor: wire only the new motor to the
+        controller board, off the daisy chain, so a broadcast ping can only
+        find it. Returns the ID written. The replacement's homing offset and
+        travel range are unknown to the old calibration file, so recalibrate
+        after reassembling the chain.
+        """
+        self.disconnect()
+        robot = self._make_robot(port, self.robot_id)
+        try:
+            robot.bus.setup_motor(motor)
+        finally:
+            # Only one motor is physically present by assumption; disconnect(True)
+            # would try to disable torque on all six and fail on the five that
+            # cannot answer.
+            if robot.bus.is_connected:
+                robot.bus.disconnect(False)
+        return robot.bus.motors[motor].id
+
     # ------------------------------------------------------------ control --
 
     def kinematics(self) -> SO101Kinematics:
@@ -587,7 +612,33 @@ class SO101App:
         self.device_status = ttk.Label(device, text="等待 USB 机械臂")
         self.device_status.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
-        calibration = ttk.LabelFrame(outer, text="2. 校准", padding=12)
+        motor_id = ttk.LabelFrame(outer, text="2. 更换电机后设置 ID", padding=12)
+        motor_id.pack(fill="x", pady=12)
+        ttk.Label(
+            motor_id,
+            text=(
+                "仅当总线上只接了这一个电机时使用（例如把新电机单独接到控制板上，不接菊花链其它部分）。"
+                "写入后旧的校准文件对这个关节不再准确，需要重新校准。"
+            ),
+            wraplength=720,
+            justify="left",
+        ).pack(anchor="w")
+        motor_id_row = ttk.Frame(motor_id)
+        motor_id_row.pack(fill="x", pady=(8, 0))
+        ttk.Label(motor_id_row, text="这是哪个关节：").pack(side="left")
+        self.motor_id_var = tk.StringVar(value=MOTOR_NAMES[0])
+        ttk.Combobox(
+            motor_id_row,
+            textvariable=self.motor_id_var,
+            state="readonly",
+            width=16,
+            values=list(MOTOR_NAMES),
+        ).pack(side="left", padx=(4, 12))
+        ttk.Button(motor_id_row, text="写入电机 ID", command=self._write_motor_id).pack(side="left")
+        self.motor_id_status = ttk.Label(motor_id, text="")
+        self.motor_id_status.pack(anchor="w", pady=(6, 0))
+
+        calibration = ttk.LabelFrame(outer, text="3. 校准", padding=12)
         calibration.pack(fill="x", pady=12)
         self.cal_status = ttk.Label(calibration, text=self._calibration_status_text())
         self.cal_status.pack(anchor="w")
@@ -609,7 +660,7 @@ class SO101App:
 
     def _build_cartesian(self, outer) -> None:
         tk, ttk = self.tk, self.ttk
-        control = ttk.LabelFrame(outer, text="3. 末端笛卡尔控制", padding=12)
+        control = ttk.LabelFrame(outer, text="4. 末端笛卡尔控制", padding=12)
         control.pack(fill="x")
 
         steps = ttk.Frame(control)
@@ -678,7 +729,7 @@ class SO101App:
 
     def _build_joints(self, outer) -> None:
         ttk = self.ttk
-        frame = ttk.LabelFrame(outer, text="4. 关节微调（笛卡尔解不出来时用它脱困）", padding=12)
+        frame = ttk.LabelFrame(outer, text="5. 关节微调（笛卡尔解不出来时用它脱困）", padding=12)
         frame.pack(fill="x", pady=(12, 0))
         for index, name in enumerate(ARM_JOINTS):
             ttk.Label(frame, text=name, width=15).grid(row=index, column=0, sticky="w", pady=2)
@@ -832,6 +883,46 @@ class SO101App:
         self.cal_btn.config(text="开始校准")
         self.calibration_stage = 0
         self._log("电机中心点已重置")
+
+    def _write_motor_id(self) -> None:
+        from tkinter import messagebox
+
+        motor = self.motor_id_var.get()
+        if motor not in MOTOR_NAMES:
+            self._show_error(RuntimeError("请先选择这是哪个关节。"))
+            return
+        try:
+            port = self._selected_port()
+            target_id = self.controller.motor_id_for(motor)
+        except Exception as error:
+            self._show_error(error)
+            return
+        if not messagebox.askyesno(
+            "写入电机 ID",
+            f"请确认总线上现在只连接了这一个电机（不接菊花链其它部分）。\n\n"
+            f"将把它写成「{motor}」关节：ID={target_id}，波特率恢复为默认值。\n"
+            "这会覆盖电机里原来的 ID。是否继续？",
+        ):
+            return
+        # A stale "已连接"/校准中 状态会误导后续操作：这一步之后总线上只有一个
+        # 电机，不再是完整的机械臂。
+        if self.connected_port:
+            self._disconnected(None)
+        self.sampling = False
+        self.calibration_stage = 0
+        self.cal_btn.config(text="开始校准")
+        self.motor_id_status.config(text="正在写入…")
+        self._submit(
+            lambda: self.controller.set_motor_id(port, motor),
+            lambda new_id: self._motor_id_written(motor, new_id),
+        )
+
+    def _motor_id_written(self, motor: str, new_id: object) -> None:
+        self.motor_id_status.config(
+            text=f"「{motor}」的 ID 已写入为 {new_id}。请接回完整菊花链，然后重新校准。"
+        )
+        self.cal_status.config(text=self._calibration_status_text())
+        self._log(f"电机 ID 已设置：{motor} -> {new_id}")
 
     def _movement_done(self, state: object) -> None:
         self._set_controls(True)
