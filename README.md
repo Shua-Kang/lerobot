@@ -217,6 +217,16 @@ for i in range(4):
 - `cv2.VideoCapture` 对象常驻打开比每次现开现关快很多；要连续拍多张，复用同一个对象，`read()` 前先丢几帧保证不是上一次的缓存帧。
 - 逆光或对着窗户背景容易过曝，压暗一点更容易看清透明/反光的物体：`cv2.convertScaleAbs(frame, alpha=0.7)`。
 
+## 10. 双摄像头 Peg Insertion 实验录像
+
+本次实验包含抓取重试、搬运、毫米级插入、松爪确认和机械臂停放，录像全长约 **23 分 59.7 秒**。左侧是 camera0，右侧是 camera1，下方为基于操作日志整理的阶段性观察与决策摘要。
+
+- [完整中文版（压缩 MP4）](docs/media/peg_full_camera01_zh_small.mp4)
+- [完整英文版（压缩 MP4）](docs/media/peg_full_camera01_en_small.mp4)
+- [视频参数、同步限制与复现说明](docs/media/README.md)
+
+压缩版本使用 H.264，1280 × 506，10 fps；保留完整时间段，没有剪掉等待、重试或最后插入的部分。原始录像和高码率导出保留在本地 `outputs/`，不提交到 Git。
+
 ## 故障排查
 
 - 没有端口：检查 USB 数据线、外部电源；Mac 一般显示为 `/dev/cu.usbmodem...`。
