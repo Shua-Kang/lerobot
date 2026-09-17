@@ -134,6 +134,89 @@ GUI 每 0.7 秒扫描一次 USB。只有一个匹配设备时会自动选中；�
 
 页面支持右侧滚动条、鼠标滚轮和触控板滚动。
 
+## 8. 脚本控制（不开图形界面）
+
+图形界面背后就是一个 `ArmController`，写脚本时可以直接用同一个类——运动学、软件积分补偿、过热保护都是同一套，不用重新实现：
+
+```python
+from lerobot.scripts.lerobot_so101_gui import ArmController
+from lerobot.scripts.so101_kinematics import EEPose
+
+PORT = "/dev/cu.usbmodem5B141121241"  # 用 `ls /dev/cu.usbmodem*` 确认当前是哪个
+
+arm = ArmController()
+state = arm.connect(PORT)      # 需要已有校准文件，否则报错（见第 4 节）
+print(state["ee"])             # 当前末端位姿 x/y/z（米）、pitch/roll（度）
+
+arm.nudge("z", 0.01)           # 沿一个坐标移动，其余四个不变（10 mm）
+arm.goto_pose(EEPose(x=0.20, y=0.0, z=0.02, pitch=-60, roll=0))
+arm.nudge_joint("wrist_roll", 5.0)   # 直接关节微调，笛卡尔解不出来时用
+arm.set_gripper(80)            # 0 = 全关，100 = 全开
+arm.ready_pose()               # 回到直立姿态
+
+arm.disconnect()               # 用完记得断开，会自动关扭矩
+```
+
+`connect()` / `nudge()` / `goto_pose()` 请求超出可达范围或关节限位会抛 `so101_kinematics.UnreachableError`，电机过热会抛 `OverheatError`（见第 7 节），正常写脚本时用 `try`/`except` 接住即可，机械臂在抛异常前不会移动。
+
+**同一个进程里跑到底，不要每条指令都新建一次 `ArmController` / 重新 `connect()`。** 每次连接都会重新同步一次末端目标；如果指令之间反复断开重连，位姿会跟着松弛、抖动，且更容易触发第 7 节里提到的串口丢包。写连续动作（比如视觉伺服）时，把整个循环放在一次 `connect()` 之后、`disconnect()` 之前。
+
+只想操作电机总线本身、不经过运动学的场景（比如批量读温度、换电机前先看总线上有几个 ID）：
+
+```python
+from lerobot.motors.feetech import FeetechMotorsBus
+FeetechMotorsBus.scan_port(PORT)      # 只读，扫描各波特率下能 ping 到的电机 ID
+```
+
+给单颗新电机写 ID（第 6 节图形界面按钮背后调用的就是这个，前提同样是总线上只接了这一颗电机）：
+
+```python
+arm.set_motor_id(PORT, "wrist_roll")  # 返回写入后的 ID
+```
+
+## 9. 获取摄像头画面
+
+这台设备除了 MacBook 自带摄像头外，一般还接了外部 USB 摄像头。用 OpenCV 读取：
+
+### 授权
+
+第一次用 Python 读摄像头，macOS 会拦截：
+
+```
+OpenCV: not authorized to capture video (status 0), requesting...
+OpenCV: camera failed to properly initialize!
+```
+
+去「系统设置 → 隐私与安全性 → 摄像头」，把运行 Python 的终端 App（Terminal / Ghostty / iTerm 等）打勾。**必须完全退出这个终端 App 再重新打开，勾选才生效**——只重新跑脚本没用。
+
+### 找到每一路摄像头对应的 index
+
+```python
+import cv2
+
+for i in range(4):
+    cap = cv2.VideoCapture(i)
+    if not cap.isOpened():
+        print(i, "不可用")
+        continue
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+    for _ in range(10):
+        ok, frame = cap.read()      # 前几帧经常是黑的/曝光没稳，丢弃
+    if ok:
+        cv2.imwrite(f"cam{i}.jpg", frame)
+        print(i, frame.shape)
+    cap.release()
+```
+
+存下每张 `camN.jpg` 看一眼是哪个机位。**index 顺序不保证稳定**——重新插拔 USB 或者重启电脑之后可能会变，每次先跑一遍这个探测脚本，不要在代码里硬编码上次记下的编号。
+
+### 读取建议
+
+- 打开后丢弃前 8～10 帧再用，自动曝光/白平衡还没收敛。
+- `cv2.VideoCapture` 对象常驻打开比每次现开现关快很多；要连续拍多张，复用同一个对象，`read()` 前先丢几帧保证不是上一次的缓存帧。
+- 逆光或对着窗户背景容易过曝，压暗一点更容易看清透明/反光的物体：`cv2.convertScaleAbs(frame, alpha=0.7)`。
+
 ## 故障排查
 
 - 没有端口：检查 USB 数据线、外部电源；Mac 一般显示为 `/dev/cu.usbmodem...`。
